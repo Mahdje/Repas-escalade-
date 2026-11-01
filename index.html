@@ -1,0 +1,1093 @@
+const byId = Object.fromEntries(M.map(m => [m[0], m]));
+const $ = id => document.getElementById(id);
+
+const STORAGE_KEY = "repas-escalade-v2";
+const cols = [
+  "Petit-déj", "Déjeuner", "Snack", "Post-séance",
+  "Dîner", "Snack 1", "Snack 2"
+];
+
+const clone = value => JSON.parse(JSON.stringify(value));
+
+const defaults = {
+  selected: {},
+  planning: clone(WEEK),
+  purchased: {},
+  source: "selection"
+};
+
+function loadState() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+    if (!raw || typeof raw !== "object") return clone(defaults);
+
+    const selected = {};
+    for (const [id, quantity] of Object.entries(raw.selected || {})) {
+      if (byId[id] && Number.isFinite(quantity) && quantity > 0) {
+        selected[id] = Math.min(100, quantity);
+      }
+    }
+
+    const planning = WEEK.map(([day, status, ids], index) => {
+      const saved = raw.planning?.[index];
+
+      if (!Array.isArray(saved) || !Array.isArray(saved[2])) {
+        return [day, status, [...ids]];
+      }
+
+      return [
+        day,
+        saved[1] === "Escalade" ? "Escalade" : "Repos",
+        cols.map((_, slot) => {
+          const id = Number(saved[2][slot]);
+          return byId[id] ? id : null;
+        })
+      ];
+    });
+
+    return {
+      selected,
+      planning,
+      purchased:
+        raw.purchased && typeof raw.purchased === "object"
+          ? raw.purchased
+          : {},
+      source: raw.source === "planning" ? "planning" : "selection"
+    };
+  } catch {
+    return clone(defaults);
+  }
+}
+
+let state = loadState();
+
+function saveState() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    $("saveStatus").textContent = "✓ Sauvegardé dans ce navigateur";
+  } catch {
+    $("saveStatus").textContent =
+      "⚠ Sauvegarde indisponible : les modifications restent en mémoire.";
+  }
+}
+
+function escapeHTML(value) {
+  return String(value).replace(/[&<>"']/g, character => ({
+    "&": "&",
+    "<": "<",
+    ">": ">",
+    '"': """,
+    "'": "'"
+  })[character]);
+}
+
+function formatNumber(value) {
+  return new Intl.NumberFormat("fr-CH", {
+    maximumFractionDigits: 2
+  }).format(value);
+}
+
+// --------------------------------------------------
+// Styles supplémentaires
+// --------------------------------------------------
+
+const extraStyle = document.createElement("style");
+
+extraStyle.textContent = `
+  button, input, select { font: inherit; }
+  button:focus-visible, input:focus-visible, select:focus-visible,
+  [tabindex]:focus-visible {
+    outline: 2px solid var(--acc);
+    outline-offset: 3px;
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 15px;
+  }
+
+  .action {
+    background: var(--acc);
+    color: white;
+    border: 0;
+    padding: 9px 13px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .action.secondary { background: #334155; }
+  .action.danger { background: #991b1b; }
+  .action:disabled { opacity: .5; cursor: not-allowed; }
+
+  .meal-selection {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding-bottom: 12px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid #334155;
+  }
+
+  .meal-selection label {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 13px;
+  }
+
+  input[type="checkbox"] {
+    accent-color: var(--acc);
+    width: 18px;
+    height: 18px;
+    flex: none;
+  }
+
+  .portion-input { width: 75px; min-width: 0; }
+
+  .card.selected {
+    outline: 2px solid var(--acc);
+    outline-offset: -2px;
+  }
+
+  .drag-handle {
+    cursor: grab;
+    background: #334155;
+    color: var(--txt);
+    border: 1px dashed var(--mut);
+    border-radius: 8px;
+    padding: 7px 10px;
+    margin-top: 12px;
+    font-size: 13px;
+  }
+
+  .drag-handle:active { cursor: grabbing; }
+
+  #week { min-width: 1500px; }
+  #week td { vertical-align: top; }
+  #week .drop-cell { min-width: 155px; }
+  #week .drop-cell.drag-over {
+    background: #374151;
+    outline: 2px dashed var(--acc);
+    outline-offset: -3px;
+  }
+
+  .planned-meal {
+    background: #0f172a;
+    padding: 9px;
+    border-radius: 8px;
+    cursor: grab;
+    line-height: 1.4;
+    margin-bottom: 8px;
+  }
+
+  .empty-slot {
+    display: block;
+    color: var(--mut);
+    font-size: 12px;
+    margin-bottom: 8px;
+  }
+
+  .slot-editor {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+  }
+
+  .slot-select {
+    width: 115px;
+    min-width: 0;
+    font-size: 12px;
+    padding: 5px;
+  }
+
+  .remove-slot {
+    border: 0;
+    background: #334155;
+    color: white;
+    padding: 5px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .day-status { width: 110px; font-size: 12px; }
+  .shopping-done td { opacity: .5; }
+  .shopping-done .ingredient-name { text-decoration: line-through; }
+  .shopping-summary { color: var(--mut); margin: 12px 0; }
+  #saveStatus, #appMessage { font-size: 13px; color: var(--mut); }
+  #appMessage { min-height: 20px; margin-bottom: 12px; }
+
+  .shopping-empty {
+    padding: 25px;
+    background: var(--card);
+    border-radius: 12px;
+    color: var(--mut);
+  }
+
+  details.shopping-reference { margin-top: 25px; }
+  details.shopping-reference summary {
+    cursor: pointer;
+    margin-bottom: 12px;
+    color: var(--mut);
+  }
+
+  @media (max-width: 600px) {
+    body { padding: 12px; }
+    .grid { grid-template-columns: 1fr; }
+    .toolbar > select { max-width: 100%; }
+  }
+`;
+
+document.head.appendChild(extraStyle);
+
+// --------------------------------------------------
+// Commandes ajoutées à l'interface
+// --------------------------------------------------
+
+$("repas").insertAdjacentHTML("afterbegin", `
+  <div class="toolbar">
+    <button type="button" class="action" id="selectedCourses">
+      🛒 Courses des repas cochés
+    </button>
+    <button type="button" class="action secondary" id="selectVisible">
+      Cocher les repas affichés
+    </button>
+    <button type="button" class="action secondary" id="clearSelection">
+      Tout décocher
+    </button>
+    <span id="selectionSummary"></span>
+  </div>
+`);
+
+$("semaine").insertAdjacentHTML("afterbegin", `
+  <div class="toolbar">
+    <button type="button" class="action" id="planningCourses">
+      🛒 Courses du planning
+    </button>
+    <button type="button" class="action secondary" id="resetPlanning">
+      Restaurer la semaine type
+    </button>
+    <button type="button" class="action danger" id="emptyPlanning">
+      Vider le planning
+    </button>
+  </div>
+  <p class="note" style="margin:0 0 15px">
+    Depuis l’onglet Repas, fais glisser « Glisser vers le planning »
+    sur l’onglet Semaine, puis sur une case.
+    Dans le planning, glisse un repas vers une autre case :
+    deux cases occupées échangent leurs repas.
+    Les menus permettent aussi de modifier chaque case.
+    Chaque case correspond à une portion.
+  </p>
+`);
+
+$("courses").innerHTML = `
+  <div class="toolbar">
+    <label for="shoppingSource">Générer à partir de :</label>
+    <select id="shoppingSource">
+      <option value="selection">Repas cochés et portions</option>
+      <option value="planning">Planning complet</option>
+    </select>
+    <button type="button" class="action secondary" id="copyShopping">
+      📋 Copier
+    </button>
+    <button type="button" class="action secondary" id="downloadShopping">
+      ⬇ Télécharger .txt
+    </button>
+    <button type="button" class="action secondary" id="resetPurchased">
+      Tout marquer à acheter
+    </button>
+  </div>
+
+  <p class="shopping-summary" id="shoppingSummary"></p>
+  <div id="shoppingContent"></div>
+
+  <p class="note">
+    Les quantités reprennent les ingrédients indiqués dans les recettes.
+    Les unités différentes restent séparées : une banane entière
+    n’est pas convertie automatiquement en grammes.
+    Les ingrédients seulement mentionnés dans les préparations ou astuces
+    ne sont pas ajoutés.
+  </p>
+
+  <details class="shopping-reference">
+    <summary>Voir aussi la liste générale et les conseils d’organisation</summary>
+    <div class="tbl-wrap"><table id="shop"></table></div>
+  </details>
+`;
+
+document.querySelector(".tabs").insertAdjacentHTML("afterend", `
+  <p id="saveStatus" role="status"></p>
+  <p id="appMessage" role="status" aria-live="polite"></p>
+`);
+
+function notify(message) {
+  $("appMessage").textContent = message;
+}
+
+// --------------------------------------------------
+// Onglets
+// --------------------------------------------------
+
+function activateTab(id) {
+  document.querySelectorAll(".tab").forEach(button => {
+    button.classList.toggle("active", button.dataset.t === id);
+  });
+
+  document.querySelectorAll(".section").forEach(section => {
+    section.classList.toggle("active", section.id === id);
+  });
+}
+
+document.querySelectorAll(".tab").forEach(button => {
+  button.onclick = () => activateTab(button.dataset.t);
+});
+
+// --------------------------------------------------
+// Catalogue et sélection
+// --------------------------------------------------
+
+const fCat = $("fCat");
+
+fCat.innerHTML = '<option value="">Toutes catégories</option>' +
+  [...new Set(M.map(m => m[2]))]
+    .map(category =>
+      `<option value="${escapeHTML(category)}">${escapeHTML(category)}</option>`
+    ).join("");
+
+function filteredMeals() {
+  const query = $("search").value.trim().toLocaleLowerCase("fr");
+  const category = fCat.value;
+  const type = $("fType").value;
+  const sorting = $("sort").value;
+
+  const list = M.filter(meal =>
+    (!query ||
+      (meal[1] + " " + meal[5]).toLocaleLowerCase("fr").includes(query)) &&
+    (!category || meal[2] === category) &&
+    (!type || meal[3] === type ||
+      (type !== "Les deux" && meal[3] === "Les deux"))
+  );
+
+  const index = { n: 0, p: 8, kcal: 7, g: 9, t: 4 }[sorting];
+
+  return list.sort((a, b) =>
+    sorting === "n" || sorting === "t"
+      ? a[index] - b[index]
+      : b[index] - a[index]
+  );
+}
+
+function renderSelectionSummary() {
+  const quantities = Object.values(state.selected);
+  const portions = quantities.reduce((sum, quantity) => sum + quantity, 0);
+
+  $("selectionSummary").textContent =
+    `${quantities.length} repas cochés · ${formatNumber(portions)} portions`;
+}
+
+function renderMeals() {
+  const list = filteredMeals();
+
+  $("count").textContent = `${list.length} repas affichés`;
+
+  $("grid").innerHTML = list.map(meal => {
+    const id = meal[0];
+    const selected = Object.hasOwn(state.selected, id);
+
+    return `
+      <article class="card ${selected ? "selected" : ""}">
+        <div class="meal-selection">
+          <label>
+            <input type="checkbox"
+              class="meal-check"
+              data-id="${id}"
+              ${selected ? "checked" : ""}>
+            Pour les courses
+          </label>
+
+          <label>
+            Portions
+            <input type="number"
+              class="portion-input"
+              data-id="${id}"
+              aria-label="Portions pour ${escapeHTML(meal[1])}"
+              min="0.5" max="100" step="0.5"
+              value="${selected ? state.selected[id] : 1}">
+          </label>
+        </div>
+
+        <h3>${id}. ${escapeHTML(meal[1])}</h3>
+
+        <div class="tags">
+          <span class="tag">${escapeHTML(meal[2])}</span>
+          <span class="tag ${meal[3].split(" ")[0]}">
+            ${escapeHTML(meal[3])}
+          </span>
+          <span class="tag">⏱️ ${meal[4]} min</span>
+        </div>
+
+        <div class="macros">
+          <div><b>${meal[7]}</b>kcal</div>
+          <div class="p"><b>${meal[8]}g</b>Prot.</div>
+          <div class="g"><b>${meal[9]}g</b>Gluc.</div>
+          <div class="l"><b>${meal[10]}g</b>Lip.</div>
+        </div>
+
+        <p><span class="lbl">Ingrédients :</span> ${escapeHTML(meal[5])}</p>
+        <p><span class="lbl">Préparation :</span> ${escapeHTML(meal[6])}</p>
+        <p><span class="lbl">Conservation :</span> ${escapeHTML(meal[11])}</p>
+        <p><span class="lbl">💡 Astuce :</span> ${escapeHTML(meal[12])}</p>
+
+        <button type="button" class="drag-handle"
+          draggable="true" data-meal-id="${id}">
+          ⠿ Glisser vers le planning
+        </button>
+      </article>
+    `;
+  }).join("");
+
+  renderSelectionSummary();
+}
+
+["search", "fCat", "fType", "sort"].forEach(id => {
+  $(id).addEventListener(id === "search" ? "input" : "change", renderMeals);
+});
+
+$("grid").addEventListener("change", event => {
+  const input = event.target;
+  const id = Number(input.dataset.id);
+  if (!byId[id]) return;
+
+  if (input.matches(".meal-check")) {
+    const card = input.closest(".card");
+    const quantityInput = card.querySelector(".portion-input");
+    const quantity = Number(quantityInput.value);
+
+    if (input.checked) {
+      state.selected[id] =
+        Number.isFinite(quantity) && quantity > 0
+          ? Math.min(100, quantity)
+          : 1;
+    } else {
+      delete state.selected[id];
+    }
+  } else if (input.matches(".portion-input")) {
+    const quantity = Number(input.value);
+
+    if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 100) {
+      input.value = state.selected[id] || 1;
+      notify("Indique un nombre de portions supérieur à 0 et inférieur ou égal à 100.");
+      return;
+    }
+
+    // Modifier les portions sélectionne automatiquement le repas.
+    state.selected[id] = quantity;
+  } else {
+    return;
+  }
+
+  saveState();
+  renderMeals();
+  renderShopping();
+});
+
+$("selectVisible").onclick = () => {
+  filteredMeals().forEach(meal => {
+    state.selected[meal[0]] ??= 1;
+  });
+  saveState();
+  renderMeals();
+  renderShopping();
+};
+
+$("clearSelection").onclick = () => {
+  state.selected = {};
+  saveState();
+  renderMeals();
+  renderShopping();
+};
+
+function showCourses(source) {
+  state.source = source;
+  saveState();
+  renderShopping();
+  activateTab("courses");
+}
+
+$("selectedCourses").onclick = () => showCourses("selection");
+$("planningCourses").onclick = () => showCourses("planning");
+
+// --------------------------------------------------
+// Besoins : calcul d'origine conservé
+// --------------------------------------------------
+
+function renderNeeds() {
+  const p = Number($("poids").value);
+  const t = Number($("taille").value);
+  const a = Number($("age").value);
+  const f = Number($("act").value);
+
+  if (![p, t, a, f].every(value => Number.isFinite(value) && value > 0)) {
+    $("res").textContent = "Renseigne des valeurs positives pour calculer les besoins.";
+    return;
+  }
+
+  const bmr = Math.round(10 * p + 6.25 * t - 5 * a + 5);
+  const tdee = Math.round(bmr * f);
+  const target = tdee + 200;
+  const prot = Math.round(p * 2);
+  const gluc = Math.round(p * 4.6);
+  const lip = Math.max(0, Math.round((target - prot * 4 - gluc * 4) / 9));
+
+  $("res").innerHTML = `
+    <div><small>Métabolisme de base</small><b>${bmr}</b><small>kcal/j</small></div>
+    <div><small>Dépense totale</small><b>${tdee}</b><small>kcal/j</small></div>
+    <div><small>Cible prise de muscle</small><b>${target}</b><small>kcal/j</small></div>
+    <div><small>Protéines (~2 g/kg)</small>
+      <b style="color:var(--p)">${prot} g</b><small>par jour</small></div>
+    <div><small>Glucides</small>
+      <b style="color:var(--g)">${gluc} g</b><small>par jour</small></div>
+    <div><small>Lipides</small>
+      <b style="color:var(--l)">${lip} g</b><small>par jour</small></div>
+  `;
+}
+
+["poids", "taille", "age", "act"].forEach(id => {
+  $(id).addEventListener("input", renderNeeds);
+});
+
+// --------------------------------------------------
+// Planning modifiable
+// --------------------------------------------------
+
+function mealOptions(currentId) {
+  return '<option value="">— Vide —</option>' +
+    M.map(meal => `
+      <option value="${meal[0]}" ${meal[0] === currentId ? "selected" : ""}>
+        ${meal[0]}. ${escapeHTML(meal[1])}
+      </option>
+    `).join("");
+}
+
+function renderWeek() {
+  const totals = [0, 0, 0, 0];
+
+  const rows = state.planning.map(([day, status, ids], dayIndex) => {
+    const daily = [0, 0, 0, 0];
+
+    ids.forEach(id => {
+      if (!byId[id]) return;
+      daily.forEach((_, index) => {
+        daily[index] += byId[id][7 + index];
+      });
+    });
+
+    daily.forEach((value, index) => totals[index] += value);
+
+    return `
+      <tr>
+        <td><b>${escapeHTML(day)}</b></td>
+        <td>
+          <select class="day-status"
+            data-day="${dayIndex}"
+            aria-label="Activité du ${escapeHTML(day)}">
+            <option ${status === "Repos" ? "selected" : ""}>Repos</option>
+            <option ${status === "Escalade" ? "selected" : ""}>Escalade</option>
+          </select>
+        </td>
+
+        ${ids.map((id, slotIndex) => `
+          <td class="drop-cell" data-day="${dayIndex}" data-slot="${slotIndex}">
+            ${id ? `
+              <div class="planned-meal" draggable="true"
+                data-day="${dayIndex}" data-slot="${slotIndex}">
+                ${id}. ${escapeHTML(byId[id][1])}
+              </div>
+            ` : '<span class="empty-slot">Déposer un repas ici</span>'}
+
+            <div class="slot-editor">
+              <select class="slot-select"
+                data-day="${dayIndex}" data-slot="${slotIndex}"
+                aria-label="${escapeHTML(day)} — ${escapeHTML(cols[slotIndex])}">
+                ${mealOptions(id)}
+              </select>
+
+              ${id ? `
+                <button type="button" class="remove-slot"
+                  data-day="${dayIndex}" data-slot="${slotIndex}"
+                  aria-label="Retirer le repas du ${escapeHTML(day)}, ${escapeHTML(cols[slotIndex])}">
+                  ×
+                </button>
+              ` : ""}
+            </div>
+          </td>
+        `).join("")}
+
+        ${daily.map((value, index) => `
+          <td ${index ? `style="color:var(--${["", "p", "g", "l"][index]})"` : ""}>
+            ${value}
+          </td>
+        `).join("")}
+      </tr>
+    `;
+  }).join("");
+
+  $("week").innerHTML = `
+    <thead>
+      <tr>
+        <th>Jour</th><th>Statut</th>
+        ${cols.map(column => `<th>${column}</th>`).join("")}
+        <th>Kcal</th><th>Prot.</th><th>Gluc.</th><th>Lip.</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows}
+      <tr>
+        <td colspan="9"><b>Moyenne / jour</b></td>
+        ${totals.map(value => `<td><b>${Math.round(value / 7)}</b></td>`).join("")}
+      </tr>
+    </tbody>
+  `;
+}
+
+function planningChanged() {
+  saveState();
+  renderWeek();
+  renderShopping();
+}
+
+$("week").addEventListener("change", event => {
+  const input = event.target;
+  const day = Number(input.dataset.day);
+
+  if (input.matches(".day-status")) {
+    state.planning[day][1] = input.value;
+  } else if (input.matches(".slot-select")) {
+    const slot = Number(input.dataset.slot);
+    const id = Number(input.value);
+    state.planning[day][2][slot] = byId[id] ? id : null;
+  } else {
+    return;
+  }
+
+  planningChanged();
+});
+
+$("week").addEventListener("click", event => {
+  const button = event.target.closest(".remove-slot");
+  if (!button) return;
+
+  state.planning[Number(button.dataset.day)][2][Number(button.dataset.slot)] = null;
+  planningChanged();
+});
+
+$("resetPlanning").onclick = () => {
+  if (!confirm("Remplacer le planning actuel par la semaine type ?")) return;
+  state.planning = clone(WEEK);
+  planningChanged();
+};
+
+$("emptyPlanning").onclick = () => {
+  if (!confirm("Retirer tous les repas du planning ?")) return;
+  state.planning = state.planning.map(([day, status]) => [
+    day, status, cols.map(() => null)
+  ]);
+  planningChanged();
+};
+
+// --------------------------------------------------
+// Glisser-déposer
+// --------------------------------------------------
+
+let dragged = null;
+let tabHoverTimer = null;
+
+document.addEventListener("dragstart", event => {
+  const catalogMeal = event.target.closest(".drag-handle");
+  const plannedMeal = event.target.closest(".planned-meal");
+
+  if (catalogMeal) {
+    dragged = {
+      type: "catalog",
+      id: Number(catalogMeal.dataset.mealId)
+    };
+  } else if (plannedMeal) {
+    const day = Number(plannedMeal.dataset.day);
+    const slot = Number(plannedMeal.dataset.slot);
+
+    dragged = {
+      type: "planning",
+      id: state.planning[day][2][slot],
+      day,
+      slot
+    };
+  } else {
+    return;
+  }
+
+  event.dataTransfer.setData("text/plain", String(dragged.id));
+  event.dataTransfer.effectAllowed =
+    dragged.type === "catalog" ? "copy" : "move";
+});
+
+const weekTab = document.querySelector('[data-t="semaine"]');
+
+weekTab.addEventListener("dragover", event => {
+  if (!dragged) return;
+  event.preventDefault();
+
+  if (!tabHoverTimer) {
+    tabHoverTimer = setTimeout(() => {
+      activateTab("semaine");
+      tabHoverTimer = null;
+    }, 350);
+  }
+});
+
+weekTab.addEventListener("dragleave", () => {
+  clearTimeout(tabHoverTimer);
+  tabHoverTimer = null;
+});
+
+$("week").addEventListener("dragover", event => {
+  const cell = event.target.closest(".drop-cell");
+  if (!cell || !dragged) return;
+
+  event.preventDefault();
+  event.dataTransfer.dropEffect =
+    dragged.type === "catalog" ? "copy" : "move";
+
+  document.querySelectorAll(".drag-over").forEach(element => {
+    element.classList.remove("drag-over");
+  });
+
+  cell.classList.add("drag-over");
+});
+
+$("week").addEventListener("dragleave", event => {
+  const cell = event.target.closest(".drop-cell");
+  if (cell && !cell.contains(event.relatedTarget)) {
+    cell.classList.remove("drag-over");
+  }
+});
+
+$("week").addEventListener("drop", event => {
+  const cell = event.target.closest(".drop-cell");
+  if (!cell || !dragged || !byId[dragged.id]) return;
+
+  event.preventDefault();
+
+  const day = Number(cell.dataset.day);
+  const slot = Number(cell.dataset.slot);
+
+  if (dragged.type === "planning") {
+    const previousTarget = state.planning[day][2][slot];
+
+    state.planning[day][2][slot] = dragged.id;
+    state.planning[dragged.day][2][dragged.slot] = previousTarget;
+  } else {
+    // Un ajout depuis le catalogue remplace le contenu de la case.
+    state.planning[day][2][slot] = dragged.id;
+  }
+
+  dragged = null;
+  planningChanged();
+});
+
+document.addEventListener("dragend", () => {
+  dragged = null;
+  clearTimeout(tabHoverTimer);
+  tabHoverTimer = null;
+
+  document.querySelectorAll(".drag-over").forEach(element => {
+    element.classList.remove("drag-over");
+  });
+});
+
+// --------------------------------------------------
+// Ingrédients : lecture, normalisation et cumul
+// --------------------------------------------------
+
+// Regroupe uniquement les synonymes suffisamment explicites.
+// Les produits différents (lait / lait demi-écrémé, par exemple)
+// restent distincts pour éviter les substitutions involontaires.
+const ingredientAliases = {
+  "œuf": "Œufs",
+  "œufs": "Œufs",
+  "blanc": "Blancs d’œufs",
+  "blancs": "Blancs d’œufs",
+  "blanc d'œuf": "Blancs d’œufs",
+  "blancs d'œufs": "Blancs d’œufs",
+  "cottage": "Cottage cheese",
+  "cottage cheese": "Cottage cheese",
+  "banane": "Bananes",
+  "pomme": "Pommes",
+  "poire": "Poires",
+  "soja": "Sauce soja"
+};
+
+function normalizeName(name) {
+  const cleaned = name
+    .trim()
+    .replace(/’/g, "'")
+    .replace(/\s+/g, " ");
+
+  return ingredientAliases[cleaned.toLocaleLowerCase("fr")] ||
+    cleaned.charAt(0).toLocaleUpperCase("fr") + cleaned.slice(1);
+}
+
+function parseIngredient(text) {
+  const match = text.trim().match(
+    /^(.*?)\s+(\d+(?:[.,]\d+)?)\s*(kg|g|ml|cl|l)?$/i
+  );
+
+  if (!match) {
+    return {
+      name: normalizeName(text),
+      quantity: 1,
+      unit: "à préciser"
+    };
+  }
+
+  const name = normalizeName(match[1]);
+  let quantity = Number(match[2].replace(",", "."));
+  let unit = (match[3] || "pièce").toLowerCase();
+
+  if (unit === "kg") {
+    quantity *= 1000;
+    unit = "g";
+  } else if (unit === "l") {
+    quantity *= 1000;
+    unit = "ml";
+  } else if (unit === "cl") {
+    quantity *= 10;
+    unit = "ml";
+  }
+
+  return { name, quantity, unit };
+}
+
+function sourceMeals() {
+  if (state.source === "planning") {
+    return state.planning.flatMap(([, , ids]) =>
+      ids.filter(id => byId[id]).map(id => ({ id, portions: 1 }))
+    );
+  }
+
+  return Object.entries(state.selected).map(([id, portions]) => ({
+    id: Number(id),
+    portions
+  }));
+}
+
+function shoppingItems() {
+  const grouped = new Map();
+
+  sourceMeals().forEach(({ id, portions }) => {
+    byId[id][5].split(",").forEach(text => {
+      const ingredient = parseIngredient(text);
+      const key =
+        ingredient.name.toLocaleLowerCase("fr") + "|" + ingredient.unit;
+
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          ...ingredient,
+          key,
+          quantity: 0
+        });
+      }
+
+      grouped.get(key).quantity += ingredient.quantity * portions;
+    });
+  });
+
+  return [...grouped.values()].sort((a, b) =>
+    a.name.localeCompare(b.name, "fr")
+  );
+}
+
+function quantityLabel(item) {
+  if (item.unit === "pièce") {
+    return `${formatNumber(item.quantity)} pièce${item.quantity > 1 ? "s" : ""}`;
+  }
+
+  if (item.unit === "à préciser") {
+    return `${formatNumber(item.quantity)} × quantité à préciser`;
+  }
+
+  return `${formatNumber(item.quantity)} ${item.unit}`;
+}
+
+function renderShopping() {
+  $("shoppingSource").value = state.source;
+
+  const meals = sourceMeals();
+  const portions = meals.reduce((sum, meal) => sum + meal.portions, 0);
+  const items = shoppingItems();
+  const checkedCount = items.filter(item => state.purchased[item.key]).length;
+
+  $("shoppingSummary").textContent =
+    `${formatNumber(portions)} portions · ${items.length} ingrédients · ` +
+    `${checkedCount} cochés comme achetés`;
+
+  $("copyShopping").disabled = !items.length;
+  $("downloadShopping").disabled = !items.length;
+
+  if (!items.length) {
+    $("shoppingContent").innerHTML = `
+      <p class="shopping-empty">
+        ${state.source === "planning"
+          ? "Le planning est vide. Ajoute des repas dans l’onglet Semaine."
+          : "Coche des repas dans l’onglet Repas pour générer ta liste."}
+      </p>
+    `;
+    return;
+  }
+
+  $("shoppingContent").innerHTML = `
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>Acheté</th><th>Ingrédient</th><th>Quantité totale</th></tr>
+        </thead>
+        <tbody>
+          ${items.map(item => `
+            <tr class="${state.purchased[item.key] ? "shopping-done" : ""}">
+              <td>
+                <input type="checkbox" class="purchased-check"
+                  data-key="${escapeHTML(item.key)}"
+                  aria-label="${escapeHTML(item.name)} acheté"
+                  ${state.purchased[item.key] ? "checked" : ""}>
+              </td>
+              <td class="ingredient-name">${escapeHTML(item.name)}</td>
+              <td>${quantityLabel(item)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+$("shoppingSource").onchange = event => {
+  state.source = event.target.value;
+  saveState();
+  renderShopping();
+};
+
+$("shoppingContent").addEventListener("change", event => {
+  const checkbox = event.target.closest(".purchased-check");
+  if (!checkbox) return;
+
+  if (checkbox.checked) {
+    state.purchased[checkbox.dataset.key] = true;
+  } else {
+    delete state.purchased[checkbox.dataset.key];
+  }
+
+  saveState();
+  renderShopping();
+});
+
+$("resetPurchased").onclick = () => {
+  state.purchased = {};
+  saveState();
+  renderShopping();
+};
+
+// Un changement de repas conserve les cases "acheté" déjà cochées.
+// Le bouton ci-dessus permet de repartir d'une liste entièrement à acheter.
+
+function shoppingText() {
+  const title = state.source === "planning"
+    ? "LISTE DE COURSES — PLANNING"
+    : "LISTE DE COURSES — REPAS COCHÉS";
+
+  return title + "\n\n" +
+    shoppingItems().map(item =>
+      `${state.purchased[item.key] ? "[x]" : "[ ]"} ` +
+      `${item.name} : ${quantityLabel(item)}`
+    ).join("\n");
+}
+
+$("copyShopping").onclick = async () => {
+  const text = shoppingText();
+
+  try {
+    if (!navigator.clipboard?.writeText) {
+      throw new Error("Presse-papiers indisponible");
+    }
+
+    await navigator.clipboard.writeText(text);
+    notify("Liste de courses copiée.");
+  } catch {
+    // Solution de repli, notamment si l'accès au presse-papiers est refusé.
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.top = "0";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+
+    let copied = false;
+    try {
+      copied = document.execCommand("copy");
+    } catch {
+      copied = false;
+    }
+
+    textarea.remove();
+
+    notify(copied
+      ? "Liste de courses copiée."
+      : "Copie indisponible. Utilise le téléchargement .txt.");
+  }
+};
+
+$("downloadShopping").onclick = () => {
+  const blob = new Blob(["\uFEFF", shoppingText()], {
+    type: "text/plain;charset=utf-8"
+  });
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "liste-de-courses.txt";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+// Liste générale d'origine
+$("shop").innerHTML = `
+  <thead>
+    <tr><th>Famille</th><th>Ingrédients</th><th>Conseil</th></tr>
+  </thead>
+  <tbody>
+    ${SHOP.map(row => `
+      <tr>
+        <td><b>${escapeHTML(row[0])}</b></td>
+        <td>${escapeHTML(row[1])}</td>
+        <td>${escapeHTML(row[2])}</td>
+      </tr>
+    `).join("")}
+  </tbody>
+`;
+
+// --------------------------------------------------
+// Initialisation
+// --------------------------------------------------
+
+renderMeals();
+renderNeeds();
+renderWeek();
+renderShopping();
+saveState();
